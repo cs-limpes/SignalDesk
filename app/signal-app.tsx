@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { buildSignalPostContent } from "@/lib/post-content";
+import {
+  buildSignalPostContent,
+  parseAdditionalReferencesInput,
+} from "@/lib/post-content";
 import type {
   ArticleData,
   GenerateSignalResponse,
@@ -37,9 +40,42 @@ const accessLabels: Record<SignalDraft["sourceAccessStatus"], string> = {
 
 function splitTags(value: string) {
   return value
-    .split(",")
+    .split(/[,\n]/)
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function normalizeTermName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function findTermByName(terms: TaxonomyTerm[], name: string) {
+  const normalized = normalizeTermName(name);
+  if (!normalized) {
+    return null;
+  }
+  return terms.find((term) => normalizeTermName(term.name) === normalized) ?? null;
+}
+
+function uniqueIds(values: number[]) {
+  return [...new Set(values)];
+}
+
+function uniqueNames(values: string[]) {
+  const seen = new Set<string>();
+  const names: string[] = [];
+
+  for (const value of values) {
+    const name = value.trim();
+    const key = normalizeTermName(name);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    names.push(name);
+  }
+
+  return names;
 }
 
 function getErrorMessage(error: unknown) {
@@ -67,10 +103,10 @@ export function SignalApp() {
       : window.sessionStorage.getItem("signal-auth-token") ?? ""
   );
   const [taxonomy, setTaxonomy] = useState<TaxonomyState>(emptyTaxonomy);
-  const [categoryId, setCategoryId] = useState("");
-  const [createCategoryName, setCreateCategoryName] = useState("");
+  const [categoryNameText, setCategoryNameText] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
-  const [newTagsText, setNewTagsText] = useState("");
+  const [typedTagsText, setTypedTagsText] = useState("");
+  const [additionalReferencesText, setAdditionalReferencesText] = useState("");
   const [article, setArticle] = useState<ArticleData | null>(null);
   const [draft, setDraft] = useState<SignalDraft | null>(null);
   const [duplicateMessage, setDuplicateMessage] = useState("");
@@ -80,19 +116,72 @@ export function SignalApp() {
   const [success, setSuccess] = useState<PublishResponse | null>(null);
   const [pendingStatus, setPendingStatus] = useState<PublishStatus | null>(null);
 
-  const selectedCategoryName = useMemo(() => {
-    const selected = taxonomy.categories.find(
-      (category) => String(category.id) === categoryId
-    );
-    return createCategoryName.trim() || selected?.name || "";
-  }, [categoryId, createCategoryName, taxonomy.categories]);
-
-  const selectedTagNames = useMemo(() => {
-    const existing = taxonomy.tags
-      .filter((tag) => selectedTagIds.includes(tag.id))
-      .map((tag) => tag.name);
-    return [...existing, ...splitTags(newTagsText)];
-  }, [newTagsText, selectedTagIds, taxonomy.tags]);
+  const categoryName = categoryNameText.trim();
+  const matchedCategory = useMemo(
+    () => findTermByName(taxonomy.categories, categoryName),
+    [categoryName, taxonomy.categories]
+  );
+  const skippedCategoryNames = useMemo(
+    () => (categoryName && !matchedCategory ? [categoryName] : []),
+    [categoryName, matchedCategory]
+  );
+  const selectedCategoryName = matchedCategory?.name ?? "";
+  const selectedCategoryId = matchedCategory?.id;
+  const typedTagNames = useMemo(() => uniqueNames(splitTags(typedTagsText)), [
+    typedTagsText,
+  ]);
+  const matchedTypedTags = useMemo(
+    () =>
+      typedTagNames
+        .map((tagName) => findTermByName(taxonomy.tags, tagName))
+        .filter((tag): tag is TaxonomyTerm => Boolean(tag)),
+    [taxonomy.tags, typedTagNames]
+  );
+  const skippedTagNames = useMemo(
+    () =>
+      typedTagNames.filter(
+        (tagName) => !findTermByName(taxonomy.tags, tagName)
+      ),
+    [taxonomy.tags, typedTagNames]
+  );
+  const publishTagIds = useMemo(
+    () => uniqueIds([...selectedTagIds, ...matchedTypedTags.map((tag) => tag.id)]),
+    [matchedTypedTags, selectedTagIds]
+  );
+  const selectedTagNames = useMemo(
+    () =>
+      taxonomy.tags
+        .filter((tag) => publishTagIds.includes(tag.id))
+        .map((tag) => tag.name),
+    [publishTagIds, taxonomy.tags]
+  );
+  const generationTagNames = useMemo(
+    () => uniqueNames([...selectedTagNames, ...typedTagNames]),
+    [selectedTagNames, typedTagNames]
+  );
+  const taxonomyWarning = useMemo(() => {
+    const messages: string[] = [];
+    if (skippedCategoryNames.length) {
+      messages.push(
+        `This category does not exist yet. Choose an existing one or create it deliberately. Skipped: ${skippedCategoryNames.join(", ")}.`
+      );
+    }
+    if (skippedTagNames.length) {
+      messages.push(
+        `This tag does not exist yet. Choose an existing one or create it deliberately. Skipped: ${skippedTagNames.join(", ")}.`
+      );
+    }
+    return messages.join(" ");
+  }, [skippedCategoryNames, skippedTagNames]);
+  const additionalReferencesValidation = useMemo(
+    () =>
+      parseAdditionalReferencesInput(
+        additionalReferencesText,
+        draft?.sourceUrl || articleUrl
+      ),
+    [additionalReferencesText, articleUrl, draft?.sourceUrl]
+  );
+  const invalidAdditionalReferences = additionalReferencesValidation.invalid;
 
   const wordpressBlocked =
     draft?.sourceAccessStatus === "metadata_only" && !manualSummary.trim();
@@ -190,9 +279,6 @@ export function SignalApp() {
         tags: TaxonomyTerm[];
       }>("/api/taxonomy");
       setTaxonomy({ ...data, loading: false, error: "" });
-      if (!categoryId && data.categories[0]) {
-        setCategoryId(String(data.categories[0].id));
-      }
     } catch (error) {
       setTaxonomy({
         categories: [],
@@ -217,13 +303,19 @@ export function SignalApp() {
           url: articleUrl,
           observation,
           manualSummary,
-          selectedCategory: selectedCategoryName,
-          selectedTags: selectedTagNames,
+          selectedCategory: categoryName || undefined,
+          selectedTags: generationTagNames,
         }),
       });
 
       setArticle(response.article);
-      setDraft(response.draft);
+      setDraft({
+        ...response.draft,
+        additionalReferences: parseAdditionalReferencesInput(
+          additionalReferencesText,
+          response.draft.sourceUrl
+        ).urls,
+      });
       setPendingStatus(null);
       if (response.duplicate.isDuplicate) {
         setDuplicateMessage(
@@ -243,6 +335,21 @@ export function SignalApp() {
 
   function updateDraft<K extends keyof SignalDraft>(key: K, value: SignalDraft[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
+  }
+
+  function updateAdditionalReferences(value: string) {
+    setAdditionalReferencesText(value);
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            additionalReferences: parseAdditionalReferencesInput(
+              value,
+              current.sourceUrl
+            ).urls,
+          }
+        : current
+    );
   }
 
   function toggleTag(tagId: number) {
@@ -265,9 +372,20 @@ export function SignalApp() {
       return;
     }
 
+    if (invalidAdditionalReferences.length) {
+      setErrorMessage(
+        `Fix or remove invalid additional reference URLs before sending this Signal to WordPress: ${invalidAdditionalReferences.join(", ")}.`
+      );
+      return;
+    }
+
     setPendingStatus(status);
     setErrorMessage("");
-    setStatusMessage("");
+    setStatusMessage(
+      taxonomyWarning
+        ? `Unmatched taxonomy terms will be skipped. ${taxonomyWarning}`
+        : ""
+    );
     setScreen("confirm");
   }
 
@@ -281,15 +399,25 @@ export function SignalApp() {
     setStatusMessage("");
 
     try {
+      const references = parseAdditionalReferencesInput(
+        additionalReferencesText,
+        draft.sourceUrl
+      );
+      if (references.invalid.length) {
+        throw new Error(
+          `Fix or remove invalid additional reference URLs before sending this Signal to WordPress: ${references.invalid.join(", ")}.`
+        );
+      }
+
       const result = await apiFetch<PublishResponse>("/api/publish", {
         method: "POST",
         body: JSON.stringify({
-          draft,
-          categoryId: categoryId ? Number(categoryId) : undefined,
-          categoryName: selectedCategoryName || undefined,
-          createCategoryName: createCategoryName.trim() || undefined,
-          tagIds: selectedTagIds,
-          newTags: splitTags(newTagsText),
+          draft: {
+            ...draft,
+            additionalReferences: references.urls,
+          },
+          categoryId: selectedCategoryId,
+          tagIds: publishTagIds,
           status: pendingStatus,
         }),
       });
@@ -309,6 +437,10 @@ export function SignalApp() {
     setArticleUrl("");
     setObservation("");
     setManualSummary("");
+    setCategoryNameText("");
+    setSelectedTagIds([]);
+    setTypedTagsText("");
+    setAdditionalReferencesText("");
     setArticle(null);
     setDraft(null);
     setPendingStatus(null);
@@ -359,22 +491,24 @@ export function SignalApp() {
 
         {screen === "submit" && (
           <SubmitScreen
+            additionalReferencesText={additionalReferencesText}
             articleUrl={articleUrl}
             authToken={authToken}
             busy={busyAction === "generate"}
-            categoryId={categoryId}
-            createCategoryName={createCategoryName}
+            categoryNameText={categoryNameText}
+            invalidAdditionalReferences={invalidAdditionalReferences}
             manualSummary={manualSummary}
-            newTagsText={newTagsText}
             observation={observation}
             selectedTagIds={selectedTagIds}
+            typedTagsText={typedTagsText}
+            taxonomyWarning={taxonomyWarning}
             setArticleUrl={setArticleUrl}
             setAuthToken={setAuthToken}
-            setCategoryId={setCategoryId}
-            setCreateCategoryName={setCreateCategoryName}
+            setCategoryNameText={setCategoryNameText}
+            setAdditionalReferencesText={updateAdditionalReferences}
             setManualSummary={setManualSummary}
-            setNewTagsText={setNewTagsText}
             setObservation={setObservation}
+            setTypedTagsText={setTypedTagsText}
             taxonomy={taxonomy}
             toggleTag={toggleTag}
             onGenerate={generateSignal}
@@ -384,18 +518,20 @@ export function SignalApp() {
 
         {screen === "preview" && draft && (
           <PreviewScreen
+            additionalReferencesText={additionalReferencesText}
             article={article}
             busyAction={busyAction}
-            categoryId={categoryId}
-            createCategoryName={createCategoryName}
+            categoryNameText={categoryNameText}
             draft={draft}
-            newTagsText={newTagsText}
+            invalidAdditionalReferences={invalidAdditionalReferences}
             selectedTagIds={selectedTagIds}
-            setCategoryId={setCategoryId}
-            setCreateCategoryName={setCreateCategoryName}
-            setNewTagsText={setNewTagsText}
+            setAdditionalReferencesText={updateAdditionalReferences}
+            setCategoryNameText={setCategoryNameText}
+            setTypedTagsText={setTypedTagsText}
+            taxonomyWarning={taxonomyWarning}
             taxonomy={taxonomy}
             toggleTag={toggleTag}
+            typedTagsText={typedTagsText}
             updateDraft={updateDraft}
             wordpressBlocked={wordpressBlocked}
             onBack={() => setScreen("submit")}
@@ -408,9 +544,12 @@ export function SignalApp() {
           <ConfirmScreen
             article={article}
             busyAction={busyAction}
+            invalidAdditionalReferences={invalidAdditionalReferences}
             categoryName={selectedCategoryName}
             draft={draft}
             pendingStatus={pendingStatus}
+            skippedCategoryNames={skippedCategoryNames}
+            skippedTagNames={skippedTagNames}
             tagNames={selectedTagNames}
             onBack={() => setScreen("preview")}
             onSend={sendToWordPress}
@@ -430,43 +569,47 @@ function FieldLabel({ children }: { children: ReactNode }) {
 }
 
 function SubmitScreen({
+  additionalReferencesText,
   articleUrl,
   authToken,
   busy,
-  categoryId,
-  createCategoryName,
+  categoryNameText,
+  invalidAdditionalReferences,
   manualSummary,
-  newTagsText,
   observation,
   selectedTagIds,
+  taxonomyWarning,
+  typedTagsText,
   setArticleUrl,
+  setAdditionalReferencesText,
   setAuthToken,
-  setCategoryId,
-  setCreateCategoryName,
+  setCategoryNameText,
   setManualSummary,
-  setNewTagsText,
   setObservation,
+  setTypedTagsText,
   taxonomy,
   toggleTag,
   onGenerate,
   onReloadTaxonomy,
 }: {
+  additionalReferencesText: string;
   articleUrl: string;
   authToken: string;
   busy: boolean;
-  categoryId: string;
-  createCategoryName: string;
+  categoryNameText: string;
+  invalidAdditionalReferences: string[];
   manualSummary: string;
-  newTagsText: string;
   observation: string;
   selectedTagIds: number[];
+  taxonomyWarning: string;
+  typedTagsText: string;
   setArticleUrl: (value: string) => void;
+  setAdditionalReferencesText: (value: string) => void;
   setAuthToken: (value: string) => void;
-  setCategoryId: (value: string) => void;
-  setCreateCategoryName: (value: string) => void;
+  setCategoryNameText: (value: string) => void;
   setManualSummary: (value: string) => void;
-  setNewTagsText: (value: string) => void;
   setObservation: (value: string) => void;
+  setTypedTagsText: (value: string) => void;
   taxonomy: TaxonomyState;
   toggleTag: (tagId: number) => void;
   onGenerate: (event: FormEvent) => void;
@@ -511,6 +654,23 @@ function SubmitScreen({
           />
         </label>
 
+        <label className="space-y-2">
+          <FieldLabel>Additional references</FieldLabel>
+          <textarea
+            className="min-h-28 w-full resize-y rounded-md border border-[#c4cec6] bg-[#fbfcfb] px-3 py-3 text-base outline-none transition focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
+            onChange={(event) => setAdditionalReferencesText(event.target.value)}
+            placeholder="https://example.com/further-reading"
+            value={additionalReferencesText}
+          />
+          <p className="text-sm text-[#66746c]">Optional. One URL per line.</p>
+          {invalidAdditionalReferences.length > 0 && (
+            <p className="text-sm leading-6 text-[#9a4b1f]">
+              Invalid URL{invalidAdditionalReferences.length === 1 ? "" : "s"}:{" "}
+              {invalidAdditionalReferences.join(", ")}
+            </p>
+          )}
+        </label>
+
         <button
           className="mt-auto h-12 rounded-md bg-[#244658] px-4 text-base font-semibold text-white transition hover:bg-[#193747] focus:outline-none focus:ring-2 focus:ring-[#7ba8bc] disabled:bg-[#8b9891]"
           disabled={busy}
@@ -543,24 +703,27 @@ function SubmitScreen({
               Refresh
             </button>
           </div>
-          <select
-            className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setCategoryId(event.target.value)}
-            value={categoryId}
-          >
-            <option value="">No category</option>
-            {taxonomy.categories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
           <input
             className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setCreateCategoryName(event.target.value)}
-            placeholder="Create category"
-            value={createCategoryName}
+            list="submit-category-options"
+            onChange={(event) => setCategoryNameText(event.target.value)}
+            placeholder="Type an existing category"
+            value={categoryNameText}
           />
+          <datalist id="submit-category-options">
+            {taxonomy.categories.map((category) => (
+              <option key={category.id} value={category.name} />
+            ))}
+          </datalist>
+          <p className="text-sm text-[#66746c]">
+            Existing WordPress categories only.
+          </p>
+          {taxonomy.loading && (
+            <p className="text-sm text-[#66746c]">Loading categories...</p>
+          )}
+          {taxonomy.error && (
+            <p className="text-sm leading-6 text-[#9a4b1f]">{taxonomy.error}</p>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -589,47 +752,57 @@ function SubmitScreen({
           </div>
           <input
             className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setNewTagsText(event.target.value)}
-            placeholder="New tags, comma separated"
-            value={newTagsText}
+            onChange={(event) => setTypedTagsText(event.target.value)}
+            placeholder="Type existing tags, comma separated"
+            value={typedTagsText}
           />
         </div>
+
+        {taxonomyWarning && (
+          <div className="rounded-md border border-[#d7c98d] bg-[#fff9db] px-3 py-2 text-sm leading-6 text-[#5f5012]">
+            {taxonomyWarning}
+          </div>
+        )}
       </aside>
     </form>
   );
 }
 
 function PreviewScreen({
+  additionalReferencesText,
   article,
   busyAction,
-  categoryId,
-  createCategoryName,
+  categoryNameText,
   draft,
-  newTagsText,
+  invalidAdditionalReferences,
   selectedTagIds,
-  setCategoryId,
-  setCreateCategoryName,
-  setNewTagsText,
+  setAdditionalReferencesText,
+  setCategoryNameText,
+  setTypedTagsText,
+  taxonomyWarning,
   taxonomy,
   toggleTag,
+  typedTagsText,
   updateDraft,
   wordpressBlocked,
   onBack,
   onPublish,
   onRegenerate,
 }: {
+  additionalReferencesText: string;
   article: ArticleData | null;
   busyAction: string;
-  categoryId: string;
-  createCategoryName: string;
+  categoryNameText: string;
   draft: SignalDraft;
-  newTagsText: string;
+  invalidAdditionalReferences: string[];
   selectedTagIds: number[];
-  setCategoryId: (value: string) => void;
-  setCreateCategoryName: (value: string) => void;
-  setNewTagsText: (value: string) => void;
+  setAdditionalReferencesText: (value: string) => void;
+  setCategoryNameText: (value: string) => void;
+  setTypedTagsText: (value: string) => void;
+  taxonomyWarning: string;
   taxonomy: TaxonomyState;
   toggleTag: (tagId: number) => void;
+  typedTagsText: string;
   updateDraft: <K extends keyof SignalDraft>(key: K, value: SignalDraft[K]) => void;
   wordpressBlocked: boolean;
   onBack: () => void;
@@ -701,6 +874,38 @@ function PreviewScreen({
         >
           {draft.sourceUrl}
         </a>
+
+        <div className="space-y-2">
+          <FieldLabel>Further reading</FieldLabel>
+          {draft.additionalReferences.length ? (
+            <ul className="grid gap-2 text-sm leading-6 text-[#40564b]">
+              {draft.additionalReferences.map((url) => (
+                <li className="break-all" key={url}>
+                  {url}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-[#66746c]">None</p>
+          )}
+        </div>
+
+        <label className="space-y-2">
+          <FieldLabel>Additional references</FieldLabel>
+          <textarea
+            className="min-h-28 w-full resize-y rounded-md border border-[#c4cec6] bg-[#fbfcfb] px-3 py-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
+            onChange={(event) => setAdditionalReferencesText(event.target.value)}
+            placeholder="https://example.com/further-reading"
+            value={additionalReferencesText}
+          />
+          <p className="text-sm text-[#66746c]">Optional. One URL per line.</p>
+          {invalidAdditionalReferences.length > 0 && (
+            <p className="text-sm leading-6 text-[#9a4b1f]">
+              Invalid URL{invalidAdditionalReferences.length === 1 ? "" : "s"}:{" "}
+              {invalidAdditionalReferences.join(", ")}
+            </p>
+          )}
+        </label>
       </div>
 
       <aside className="flex flex-col gap-4 rounded-lg border border-[#d5ddd6] bg-[#fcfdfb] p-4 shadow-sm">
@@ -714,24 +919,21 @@ function PreviewScreen({
 
         <div className="space-y-2">
           <FieldLabel>Category</FieldLabel>
-          <select
-            className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setCategoryId(event.target.value)}
-            value={categoryId}
-          >
-            <option value="">No category</option>
-            {taxonomy.categories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
           <input
             className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setCreateCategoryName(event.target.value)}
-            placeholder={draft.suggestedCategory || "Create category"}
-            value={createCategoryName}
+            list="preview-category-options"
+            onChange={(event) => setCategoryNameText(event.target.value)}
+            placeholder={draft.suggestedCategory || "Type an existing category"}
+            value={categoryNameText}
           />
+          <datalist id="preview-category-options">
+            {taxonomy.categories.map((category) => (
+              <option key={category.id} value={category.name} />
+            ))}
+          </datalist>
+          <p className="text-sm text-[#66746c]">
+            Existing WordPress categories only.
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -756,11 +958,17 @@ function PreviewScreen({
           </div>
           <input
             className="h-11 w-full rounded-md border border-[#c4cec6] bg-white px-3 text-base outline-none focus:border-[#2f6275] focus:ring-2 focus:ring-[#c9e2eb]"
-            onChange={(event) => setNewTagsText(event.target.value)}
-            placeholder={draft.suggestedTags.join(", ") || "New tags"}
-            value={newTagsText}
+            onChange={(event) => setTypedTagsText(event.target.value)}
+            placeholder={draft.suggestedTags.join(", ") || "Type existing tags"}
+            value={typedTagsText}
           />
         </div>
+
+        {taxonomyWarning && (
+          <div className="rounded-md border border-[#d7c98d] bg-[#fff9db] px-3 py-2 text-sm leading-6 text-[#5f5012]">
+            {taxonomyWarning}
+          </div>
+        )}
 
         <div className="mt-auto grid gap-3">
           <button
@@ -773,7 +981,11 @@ function PreviewScreen({
           </button>
           <button
             className="h-11 rounded-md border border-[#4d7466] bg-white px-3 text-sm font-semibold text-[#315d4a] disabled:border-[#c2c9c5] disabled:text-[#8b9891]"
-            disabled={Boolean(busyAction) || wordpressBlocked}
+            disabled={
+              Boolean(busyAction) ||
+              wordpressBlocked ||
+              invalidAdditionalReferences.length > 0
+            }
             onClick={() => onPublish("draft")}
             type="button"
           >
@@ -781,7 +993,11 @@ function PreviewScreen({
           </button>
           <button
             className="h-11 rounded-md bg-[#244658] px-3 text-sm font-semibold text-white disabled:bg-[#8b9891]"
-            disabled={Boolean(busyAction) || wordpressBlocked}
+            disabled={
+              Boolean(busyAction) ||
+              wordpressBlocked ||
+              invalidAdditionalReferences.length > 0
+            }
             onClick={() => onPublish("publish")}
             type="button"
           >
@@ -798,7 +1014,10 @@ function ConfirmScreen({
   busyAction,
   categoryName,
   draft,
+  invalidAdditionalReferences,
   pendingStatus,
+  skippedCategoryNames,
+  skippedTagNames,
   tagNames,
   onBack,
   onSend,
@@ -807,13 +1026,17 @@ function ConfirmScreen({
   busyAction: string;
   categoryName: string;
   draft: SignalDraft;
+  invalidAdditionalReferences: string[];
   pendingStatus: PublishStatus;
+  skippedCategoryNames: string[];
+  skippedTagNames: string[];
   tagNames: string[];
   onBack: () => void;
   onSend: () => void;
 }) {
   const contentHtml = buildSignalPostContent(draft);
   const isBusy = busyAction === pendingStatus;
+  const hasSkippedTerms = skippedCategoryNames.length || skippedTagNames.length;
 
   return (
     <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)]">
@@ -880,6 +1103,29 @@ function ConfirmScreen({
               {tagNames.length ? tagNames.join(", ") : "None"}
             </p>
           </div>
+          {hasSkippedTerms ? (
+            <div className="rounded-md border border-[#d7c98d] bg-[#fff9db] p-3">
+              <p className="font-semibold text-[#5f5012]">Skipped taxonomy</p>
+              {skippedCategoryNames.length > 0 && (
+                <p className="mt-1 text-[#5f5012]">
+                  Categories: {skippedCategoryNames.join(", ")}
+                </p>
+              )}
+              {skippedTagNames.length > 0 && (
+                <p className="mt-1 text-[#5f5012]">
+                  Tags: {skippedTagNames.join(", ")}
+                </p>
+              )}
+            </div>
+          ) : null}
+          {invalidAdditionalReferences.length > 0 && (
+            <div className="rounded-md border border-[#e0b29b] bg-[#fff4ed] p-3">
+              <p className="font-semibold text-[#763818]">Invalid references</p>
+              <p className="mt-1 break-words text-[#763818]">
+                {invalidAdditionalReferences.join(", ")}
+              </p>
+            </div>
+          )}
           <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
             <p className="font-semibold text-[#26332d]">Source Access</p>
             <p className="mt-1 text-[#5c6b63]">
@@ -905,7 +1151,7 @@ function ConfirmScreen({
           </button>
           <button
             className="h-11 rounded-md bg-[#244658] px-3 text-sm font-semibold text-white disabled:bg-[#8b9891]"
-            disabled={Boolean(busyAction)}
+            disabled={Boolean(busyAction) || invalidAdditionalReferences.length > 0}
             onClick={onSend}
             type="button"
           >

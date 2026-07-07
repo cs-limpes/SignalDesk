@@ -6,6 +6,7 @@ export interface TaxonomyTerm {
   id: number;
   name: string;
   slug: string;
+  taxonomy: "category" | "post_tag";
   count?: number;
 }
 
@@ -30,6 +31,7 @@ export interface SignalDraft {
   sourceAccessStatus: SourceAccessStatus;
   suggestedCategory: string;
   suggestedTags: string[];
+  additionalReferences: string[];
 }
 
 export interface DuplicateInfo {
@@ -56,10 +58,7 @@ export interface GenerateSignalResponse {
 export interface PublishRequest {
   draft: SignalDraft;
   categoryId?: number;
-  categoryName?: string;
-  createCategoryName?: string;
   tagIds: number[];
-  newTags: string[];
   status: PublishStatus;
 }
 

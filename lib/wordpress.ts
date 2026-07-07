@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
-import { buildSignalPostContent } from "./post-content";
+import {
+  buildSignalPostContent,
+  validateAdditionalReferences,
+} from "./post-content";
 import type { PublishRequest, PublishResponse, TaxonomyTerm } from "./types";
 
 interface RuntimeEnv {
@@ -13,6 +16,7 @@ interface WordPressTerm {
   id: number;
   name: string;
   slug: string;
+  taxonomy?: "category" | "post_tag";
   count?: number;
 }
 
@@ -225,71 +229,41 @@ export async function checkWordPressRestEndpoint(): Promise<WordPressRestCheckRe
   }
 }
 
-function mapTerm(term: WordPressTerm): TaxonomyTerm {
+function mapTerm(term: WordPressTerm, taxonomy: TaxonomyTerm["taxonomy"]): TaxonomyTerm {
   return {
     id: term.id,
     name: term.name,
     slug: term.slug,
+    taxonomy: term.taxonomy ?? taxonomy,
     count: term.count,
   };
 }
 
 export async function fetchTaxonomy() {
   const [categories, tags] = await Promise.all([
-    wpFetch("/wp-json/wp/v2/categories?per_page=100&hide_empty=false"),
-    wpFetch("/wp-json/wp/v2/tags?per_page=100&hide_empty=false"),
+    wpFetch("/wp-json/wp/v2/categories?per_page=100"),
+    wpFetch("/wp-json/wp/v2/tags?per_page=100"),
   ]);
 
   return {
-    categories: (categories as WordPressTerm[]).map(mapTerm),
-    tags: (tags as WordPressTerm[]).map(mapTerm),
+    categories: (categories as WordPressTerm[]).map((term) =>
+      mapTerm(term, "category")
+    ),
+    tags: (tags as WordPressTerm[]).map((term) => mapTerm(term, "post_tag")),
   };
 }
 
-async function createTerm(kind: "categories" | "tags", name: string) {
-  try {
-    const term = (await wpFetch(`/wp-json/wp/v2/${kind}`, {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    })) as WordPressTerm;
-    return mapTerm(term);
-  } catch (error) {
-    const termId = error instanceof WordPressError ? error.body?.data?.term_id : null;
-    if (typeof termId === "number") {
-      return { id: termId, name, slug: name.toLowerCase().replace(/\s+/g, "-") };
-    }
-    throw error;
-  }
+function uniqueValidIds(ids: number[]) {
+  return [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
 }
 
-export async function createTag(name: string) {
-  return createTerm("tags", name);
-}
-
-export async function createCategory(name: string) {
-  return createTerm("categories", name);
-}
-
-async function resolveTaxonomy(request: PublishRequest) {
-  const categories = [...(request.categoryId ? [request.categoryId] : [])];
-  if (request.createCategoryName?.trim()) {
-    const category = await createCategory(request.createCategoryName.trim());
-    categories.push(category.id);
-  }
-
-  const newTags = await Promise.all(
-    request.newTags
-      .map((tag) => tag.trim())
-      .filter(Boolean)
-      .map((tag) => createTag(tag))
-  );
-
+function resolveTaxonomy(request: PublishRequest) {
   return {
-    categories,
-    tags: [
-      ...request.tagIds.filter((id) => Number.isFinite(id)),
-      ...newTags.map((tag) => tag.id),
-    ],
+    categories:
+      typeof request.categoryId === "number"
+        ? uniqueValidIds([request.categoryId])
+        : [],
+    tags: uniqueValidIds(request.tagIds ?? []),
   };
 }
 
@@ -310,17 +284,32 @@ export async function publishSignalPost(
   }
 
   const { baseUrl } = getConfig();
-  const taxonomy = await resolveTaxonomy(request);
+  const taxonomy = resolveTaxonomy(request);
+  const references = validateAdditionalReferences(
+    request.draft.additionalReferences ?? [],
+    request.draft.sourceUrl
+  );
+
+  if (references.invalid.length) {
+    throw new Error(
+      `Invalid additional reference URL(s): ${references.invalid.join(", ")}`
+    );
+  }
+
+  const draft = {
+    ...request.draft,
+    additionalReferences: references.urls,
+  };
   const payload = {
-    title: request.draft.title,
-    content: buildSignalPostContent(request.draft),
-    excerpt: request.draft.excerpt,
+    title: draft.title,
+    content: buildSignalPostContent(draft),
+    excerpt: draft.excerpt,
     status: request.status,
     categories: taxonomy.categories,
     tags: taxonomy.tags,
     meta: {
-      source_url: request.draft.sourceUrl,
-      source_access_status: request.draft.sourceAccessStatus,
+      source_url: draft.sourceUrl,
+      source_access_status: draft.sourceAccessStatus,
     },
   };
 

@@ -17,6 +17,14 @@ npm run build
 `PUBLIC_APP_URL` is optional but recommended. When set, SignalDesk uses it as
 the Referer for backend WordPress REST requests.
 
+Taxonomy fields resolve to existing WordPress term IDs. Typed category and tag
+names are matched case-insensitively against fetched WordPress terms; unmatched
+names are skipped during publish.
+
+Additional references are optional supporting links. Add one URL per line; they
+are included as Further reading links after the primary Source link and are not
+used for Signal generation.
+
 ## Troubleshooting
 
 - HTML returned instead of JSON: confirm the frontend is calling `/api/publish`

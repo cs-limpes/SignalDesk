@@ -65,7 +65,7 @@ function extractOutputText(payload: OpenAIResponse) {
 function parseSignalDraft(text: string, article: ArticleData): SignalDraft {
   const parsed = JSON.parse(text) as Omit<
     SignalDraft,
-    "sourceUrl" | "sourceAccessStatus"
+    "sourceUrl" | "sourceAccessStatus" | "additionalReferences"
   >;
 
   return {
@@ -79,6 +79,7 @@ function parseSignalDraft(text: string, article: ArticleData): SignalDraft {
       .map((tag) => tag.trim())
       .filter(Boolean)
       .slice(0, 8),
+    additionalReferences: [],
   };
 }
 
