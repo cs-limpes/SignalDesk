@@ -6,6 +6,7 @@ interface RuntimeEnv {
   WP_BASE_URL?: string;
   WP_USERNAME?: string;
   WP_APPLICATION_PASSWORD?: string;
+  PUBLIC_APP_URL?: string;
 }
 
 interface WordPressTerm {
@@ -67,12 +68,18 @@ function getConfig() {
   const baseUrl = runtimeEnv.WP_BASE_URL?.trim().replace(/\/$/, "");
   const username = runtimeEnv.WP_USERNAME?.trim();
   const password = runtimeEnv.WP_APPLICATION_PASSWORD?.trim();
+  const publicAppUrl = runtimeEnv.PUBLIC_APP_URL?.trim().replace(/\/$/, "");
 
   if (!baseUrl || !username || !password) {
     throw new Error("WordPress credentials are not configured.");
   }
 
-  return { baseUrl, username, password };
+  return {
+    baseUrl,
+    username,
+    password,
+    referer: publicAppUrl || baseUrl,
+  };
 }
 
 function encodeBasicAuth(username: string, password: string) {
@@ -138,16 +145,23 @@ function parseJsonResponse(text: string, contentType: string, status: number, ur
 }
 
 async function wpFetch(path: string, init: RequestInit = {}) {
-  const { baseUrl, username, password } = getConfig();
+  const { baseUrl, username, password, referer } = getConfig();
   const url = `${baseUrl}${path}`;
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+
+  headers.set("Authorization", `Basic ${encodeBasicAuth(username, password)}`);
+  headers.set("User-Agent", "SignalDesk/1.0 (+https://newsoftheai.com)");
+  headers.set("Referer", referer);
+  headers.set("Accept", "application/json");
+
+  if (method === "POST" || method === "PUT") {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(url, {
     ...init,
-    headers: {
-      authorization: `Basic ${encodeBasicAuth(username, password)}`,
-      accept: "application/json",
-      "content-type": "application/json",
-      ...(init.headers ?? {}),
-    },
+    headers,
   });
 
   const text = await response.text();
@@ -166,14 +180,15 @@ async function wpFetch(path: string, init: RequestInit = {}) {
 }
 
 export async function checkWordPressRestEndpoint(): Promise<WordPressRestCheckResult> {
-  const { baseUrl } = getConfig();
+  const { baseUrl, referer } = getConfig();
   const url = `${baseUrl}/wp-json/wp/v2/posts?per_page=1`;
 
   try {
     const response = await fetch(url, {
       headers: {
-        accept: "application/json",
-        "user-agent": "SignalDesk/1.0 WordPress REST check",
+        Accept: "application/json",
+        Referer: referer,
+        "User-Agent": "SignalDesk/1.0 (+https://newsoftheai.com)",
       },
     });
     const text = await response.text();

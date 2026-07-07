@@ -8,6 +8,7 @@ interface RuntimeEnv {
   WP_USERNAME?: string;
   WP_APPLICATION_PASSWORD?: string;
   AUTH_SHARED_SECRET?: string;
+  PUBLIC_APP_URL?: string;
 }
 
 export const runtime = "edge";
@@ -21,14 +22,17 @@ export async function GET(request: Request) {
     requireAuth(request);
 
     const runtimeEnv = env as unknown as RuntimeEnv;
-    const environment = {
+    const requiredEnvironment = {
       WP_BASE_URL: configured(runtimeEnv.WP_BASE_URL),
       WP_USERNAME: configured(runtimeEnv.WP_USERNAME),
       WP_APPLICATION_PASSWORD: configured(runtimeEnv.WP_APPLICATION_PASSWORD),
       AUTH_SHARED_SECRET: configured(runtimeEnv.AUTH_SHARED_SECRET),
     };
+    const optionalEnvironment = {
+      PUBLIC_APP_URL: configured(runtimeEnv.PUBLIC_APP_URL),
+    };
 
-    const wordpressRest = environment.WP_BASE_URL
+    const wordpressRest = requiredEnvironment.WP_BASE_URL
       ? await checkWordPressRestEndpoint()
       : {
           ok: false,
@@ -39,8 +43,11 @@ export async function GET(request: Request) {
         };
 
     return Response.json({
-      ok: Object.values(environment).every(Boolean) && wordpressRest.ok,
-      environment,
+      ok: Object.values(requiredEnvironment).every(Boolean) && wordpressRest.ok,
+      environment: {
+        required: requiredEnvironment,
+        optional: optionalEnvironment,
+      },
       wordpressRest,
     });
   } catch (error) {
