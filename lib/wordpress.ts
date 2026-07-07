@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { buildSignalPostContent } from "./post-content";
 import type { PublishRequest, PublishResponse, TaxonomyTerm } from "./types";
 
 interface RuntimeEnv {
@@ -56,15 +57,6 @@ function getConfig() {
 function encodeBasicAuth(username: string, password: string) {
   const value = `${username}:${password}`;
   return btoa(value);
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 async function wpFetch(path: string, init: RequestInit = {}) {
@@ -137,20 +129,6 @@ export async function createCategory(name: string) {
   return createTerm("categories", name);
 }
 
-function buildPostContent(request: PublishRequest) {
-  const { draft } = request;
-  const signal = escapeHtml(draft.signal);
-  const sourceUrl = escapeHtml(draft.sourceUrl);
-  const accessStatus = escapeHtml(draft.sourceAccessStatus);
-
-  return [
-    `<p><strong>Signal:</strong> ${signal}</p>`,
-    `<p><a href="${sourceUrl}" rel="nofollow noopener">Source</a></p>`,
-    `<!-- source_url: ${sourceUrl} -->`,
-    `<!-- source_access_status: ${accessStatus} -->`,
-  ].join("\n");
-}
-
 async function resolveTaxonomy(request: PublishRequest) {
   const categories = [...(request.categoryId ? [request.categoryId] : [])];
   if (request.createCategoryName?.trim()) {
@@ -194,7 +172,7 @@ export async function publishSignalPost(
   const taxonomy = await resolveTaxonomy(request);
   const payload = {
     title: request.draft.title,
-    content: buildPostContent(request),
+    content: buildSignalPostContent(request.draft),
     excerpt: request.draft.excerpt,
     status: request.status,
     categories: taxonomy.categories,

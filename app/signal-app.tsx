@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import { buildSignalPostContent } from "@/lib/post-content";
 import type {
   ArticleData,
   GenerateSignalResponse,
@@ -11,7 +12,7 @@ import type {
   TaxonomyTerm,
 } from "@/lib/types";
 
-type Screen = "submit" | "preview" | "success";
+type Screen = "submit" | "preview" | "confirm" | "success";
 
 interface TaxonomyState {
   categories: TaxonomyTerm[];
@@ -67,6 +68,7 @@ export function SignalApp() {
   const [errorMessage, setErrorMessage] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [success, setSuccess] = useState<PublishResponse | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<PublishStatus | null>(null);
 
   const selectedCategoryName = useMemo(() => {
     const selected = taxonomy.categories.find(
@@ -158,6 +160,7 @@ export function SignalApp() {
 
       setArticle(response.article);
       setDraft(response.draft);
+      setPendingStatus(null);
       if (response.duplicate.isDuplicate) {
         setDuplicateMessage(
           `This source was already used ${response.duplicate.generateCount ?? 1} time(s).`
@@ -186,7 +189,7 @@ export function SignalApp() {
     );
   }
 
-  async function sendToWordPress(status: PublishStatus) {
+  function reviewWordPressAction(status: PublishStatus) {
     if (!draft) {
       return;
     }
@@ -198,11 +201,18 @@ export function SignalApp() {
       return;
     }
 
-    if (status === "publish" && !window.confirm("Publish this Signal now?")) {
+    setPendingStatus(status);
+    setErrorMessage("");
+    setStatusMessage("");
+    setScreen("confirm");
+  }
+
+  async function sendToWordPress() {
+    if (!draft || !pendingStatus) {
       return;
     }
 
-    setBusyAction(status);
+    setBusyAction(pendingStatus);
     setErrorMessage("");
     setStatusMessage("");
 
@@ -216,11 +226,12 @@ export function SignalApp() {
           createCategoryName: createCategoryName.trim() || undefined,
           tagIds: selectedTagIds,
           newTags: splitTags(newTagsText),
-          status,
+          status: pendingStatus,
         }),
       });
 
       setSuccess(result);
+      setPendingStatus(null);
       setScreen("success");
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -236,6 +247,7 @@ export function SignalApp() {
     setManualSummary("");
     setArticle(null);
     setDraft(null);
+    setPendingStatus(null);
     setSuccess(null);
     setErrorMessage("");
     setStatusMessage("");
@@ -323,8 +335,21 @@ export function SignalApp() {
             updateDraft={updateDraft}
             wordpressBlocked={wordpressBlocked}
             onBack={() => setScreen("submit")}
-            onPublish={sendToWordPress}
+            onPublish={reviewWordPressAction}
             onRegenerate={() => generateSignal()}
+          />
+        )}
+
+        {screen === "confirm" && draft && pendingStatus && (
+          <ConfirmScreen
+            article={article}
+            busyAction={busyAction}
+            categoryName={selectedCategoryName}
+            draft={draft}
+            pendingStatus={pendingStatus}
+            tagNames={selectedTagNames}
+            onBack={() => setScreen("preview")}
+            onSend={sendToWordPress}
           />
         )}
 
@@ -688,7 +713,7 @@ function PreviewScreen({
             onClick={() => onPublish("draft")}
             type="button"
           >
-            {busyAction === "draft" ? "Saving..." : "Save Draft"}
+            Review Draft
           </button>
           <button
             className="h-11 rounded-md bg-[#244658] px-3 text-sm font-semibold text-white disabled:bg-[#8b9891]"
@@ -696,7 +721,131 @@ function PreviewScreen({
             onClick={() => onPublish("publish")}
             type="button"
           >
-            {busyAction === "publish" ? "Publishing..." : "Publish"}
+            Review Publish
+          </button>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function ConfirmScreen({
+  article,
+  busyAction,
+  categoryName,
+  draft,
+  pendingStatus,
+  tagNames,
+  onBack,
+  onSend,
+}: {
+  article: ArticleData | null;
+  busyAction: string;
+  categoryName: string;
+  draft: SignalDraft;
+  pendingStatus: PublishStatus;
+  tagNames: string[];
+  onBack: () => void;
+  onSend: () => void;
+}) {
+  const contentHtml = buildSignalPostContent(draft);
+  const isBusy = busyAction === pendingStatus;
+
+  return (
+    <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)]">
+      <div className="flex flex-col gap-4 rounded-lg border border-[#d5ddd6] bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase text-[#5c6b63]">
+              Confirm
+            </p>
+            <h2 className="text-xl font-semibold text-[#15251f]">
+              {pendingStatus === "publish" ? "Publish Signal" : "Save Draft"}
+            </h2>
+          </div>
+          <span className="rounded-md bg-[#fff9db] px-3 py-1 text-xs font-semibold text-[#5f5012]">
+            no request sent
+          </span>
+        </div>
+
+        <article className="rounded-md border border-[#d5ddd6] bg-[#fbfcfb] p-4">
+          <p className="text-xs font-semibold uppercase text-[#5c6b63]">
+            Public post
+          </p>
+          <h3 className="mt-2 text-2xl font-semibold leading-8 text-[#15251f]">
+            {draft.title}
+          </h3>
+          <div
+            className="mt-4 space-y-4 text-base leading-7 text-[#26332d] [&_a]:font-semibold [&_a]:text-[#2f6275]"
+            dangerouslySetInnerHTML={{ __html: contentHtml }}
+          />
+        </article>
+
+        <label className="space-y-2">
+          <FieldLabel>Excerpt</FieldLabel>
+          <textarea
+            className="min-h-24 w-full resize-y rounded-md border border-[#c4cec6] bg-[#fbfcfb] px-3 py-3 text-base outline-none"
+            readOnly
+            value={draft.excerpt}
+          />
+        </label>
+
+        <label className="space-y-2">
+          <FieldLabel>WordPress content HTML</FieldLabel>
+          <textarea
+            className="min-h-36 w-full resize-y rounded-md border border-[#c4cec6] bg-[#fbfcfb] px-3 py-3 font-mono text-sm leading-6 outline-none"
+            readOnly
+            value={contentHtml}
+          />
+        </label>
+      </div>
+
+      <aside className="flex flex-col gap-4 rounded-lg border border-[#d5ddd6] bg-[#fcfdfb] p-4 shadow-sm">
+        <div className="grid gap-3 text-sm">
+          <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
+            <p className="font-semibold text-[#26332d]">Status</p>
+            <p className="mt-1 capitalize text-[#5c6b63]">{pendingStatus}</p>
+          </div>
+          <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
+            <p className="font-semibold text-[#26332d]">Category</p>
+            <p className="mt-1 text-[#5c6b63]">{categoryName || "None"}</p>
+          </div>
+          <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
+            <p className="font-semibold text-[#26332d]">Tags</p>
+            <p className="mt-1 text-[#5c6b63]">
+              {tagNames.length ? tagNames.join(", ") : "None"}
+            </p>
+          </div>
+          <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
+            <p className="font-semibold text-[#26332d]">Source Access</p>
+            <p className="mt-1 text-[#5c6b63]">
+              {accessLabels[draft.sourceAccessStatus]}
+            </p>
+          </div>
+          <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
+            <p className="font-semibold text-[#26332d]">Source</p>
+            <p className="mt-1 break-words text-[#5c6b63]">
+              {article?.title || draft.sourceUrl}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-auto grid gap-3">
+          <button
+            className="h-11 rounded-md border border-[#9fb1a8] bg-white px-3 text-sm font-semibold text-[#2f4a3d]"
+            disabled={Boolean(busyAction)}
+            onClick={onBack}
+            type="button"
+          >
+            Back to Edit
+          </button>
+          <button
+            className="h-11 rounded-md bg-[#244658] px-3 text-sm font-semibold text-white disabled:bg-[#8b9891]"
+            disabled={Boolean(busyAction)}
+            onClick={onSend}
+            type="button"
+          >
+            {isBusy ? "Sending..." : "Send to WordPress"}
           </button>
         </div>
       </aside>
