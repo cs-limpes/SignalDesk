@@ -46,6 +46,16 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
+function previewText(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function isLocalDevHost() {
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+    window.location.hostname
+  );
+}
+
 export function SignalApp() {
   const [screen, setScreen] = useState<Screen>("submit");
   const [articleUrl, setArticleUrl] = useState("");
@@ -88,9 +98,40 @@ export function SignalApp() {
     draft?.sourceAccessStatus === "metadata_only" && !manualSummary.trim();
 
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    if (!("serviceWorker" in navigator)) {
+      return;
     }
+
+    if (isLocalDevHost()) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) =>
+          Promise.all(
+            registrations
+              .filter((registration) =>
+                registration.scope.startsWith(window.location.origin)
+              )
+              .map((registration) => registration.unregister())
+          )
+        )
+        .catch(() => undefined);
+
+      if ("caches" in window) {
+        window.caches
+          .keys()
+          .then((keys) =>
+            Promise.all(
+              keys
+                .filter((key) => key.startsWith("ai-signal-pwa"))
+                .map((key) => window.caches.delete(key))
+            )
+          )
+          .catch(() => undefined);
+      }
+      return;
+    }
+
+    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -111,10 +152,33 @@ export function SignalApp() {
         ...(init.headers ?? {}),
       },
     });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error ?? `Request failed with HTTP ${response.status}.`);
+    const text = await response.text();
+    let body: { error?: string; details?: string } | T | null = null;
+
+    if (text) {
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        throw new Error(
+          `Expected JSON from ${path}, but received non-JSON response. HTTP ${response.status}. ${previewText(text)}`
+        );
+      }
     }
+
+    if (!response.ok) {
+      const errorBody = body as { error?: string; details?: string } | null;
+      const detail = errorBody?.details ? ` ${errorBody.details}` : "";
+      throw new Error(
+        errorBody?.error
+          ? `${errorBody.error}${detail}`
+          : `Request to ${path} failed with HTTP ${response.status}.`
+      );
+    }
+
+    if (!body) {
+      throw new Error(`Expected JSON from ${path}, but response was empty.`);
+    }
+
     return body as T;
   }
 

@@ -4,7 +4,7 @@ export function jsonError(error: unknown, status = 500) {
   }
 
   const message = error instanceof Error ? error.message : "Unexpected error.";
-  return Response.json({ error: message }, { status });
+  return Response.json({ ok: false, error: message, status }, { status });
 }
 
 export async function readJson<T>(request: Request) {

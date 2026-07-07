@@ -28,10 +28,31 @@ interface WordPressErrorBody {
   };
 }
 
+export interface WordPressRestCheckResult {
+  ok: boolean;
+  status: number;
+  contentType: string;
+  sourceHint?: string;
+  details?: string;
+}
+
 class WordPressError extends Error {
   constructor(
     message: string,
     readonly body: WordPressErrorBody | null
+  ) {
+    super(message);
+  }
+}
+
+export class WordPressNonJsonResponseError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly details: string,
+    readonly contentType: string,
+    readonly sourceHint: string,
+    readonly upstreamUrl: string
   ) {
     super(message);
   }
@@ -59,19 +80,79 @@ function encodeBasicAuth(username: string, password: string) {
   return btoa(value);
 }
 
+function previewText(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function classifyNonJsonResponse(text: string, contentType: string) {
+  const lower = text.toLowerCase();
+  const lowerType = contentType.toLowerCase();
+
+  if (lower.includes("cf-error-code") || lower.includes("cloudflare")) {
+    return "Cloudflare HTML response";
+  }
+  if (lower.includes("wp-login.php") || lower.includes("wordpress login")) {
+    return "WordPress login page";
+  }
+  if (lower.includes("rest_cookie_invalid_nonce")) {
+    return "WordPress REST auth page";
+  }
+  if (lower.includes("404") || lower.includes("not found")) {
+    return "404 HTML page";
+  }
+  if (lower.includes("signaldesk") || lower.includes("news of the ai signal")) {
+    return "SignalDesk app shell";
+  }
+  if (lowerType.includes("text/html") || lower.startsWith("<!doctype")) {
+    return "HTML response";
+  }
+  return "non-JSON response";
+}
+
+function parseJsonResponse(text: string, contentType: string, status: number, url: string) {
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const details = previewText(text);
+    const sourceHint = classifyNonJsonResponse(text, contentType);
+    console.error("WordPress returned non-JSON response", {
+      status,
+      contentType,
+      sourceHint,
+      upstreamUrl: url,
+      details,
+    });
+    throw new WordPressNonJsonResponseError(
+      "WordPress returned non-JSON response",
+      status,
+      details,
+      contentType,
+      sourceHint,
+      url
+    );
+  }
+}
+
 async function wpFetch(path: string, init: RequestInit = {}) {
   const { baseUrl, username, password } = getConfig();
-  const response = await fetch(`${baseUrl}${path}`, {
+  const url = `${baseUrl}${path}`;
+  const response = await fetch(url, {
     ...init,
     headers: {
       authorization: `Basic ${encodeBasicAuth(username, password)}`,
+      accept: "application/json",
       "content-type": "application/json",
       ...(init.headers ?? {}),
     },
   });
 
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = parseJsonResponse(text, contentType, response.status, url);
 
   if (!response.ok) {
     const message =
@@ -82,6 +163,51 @@ async function wpFetch(path: string, init: RequestInit = {}) {
   }
 
   return body;
+}
+
+export async function checkWordPressRestEndpoint(): Promise<WordPressRestCheckResult> {
+  const { baseUrl } = getConfig();
+  const url = `${baseUrl}/wp-json/wp/v2/posts?per_page=1`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "SignalDesk/1.0 WordPress REST check",
+      },
+    });
+    const text = await response.text();
+    const contentType = response.headers.get("content-type") ?? "";
+
+    try {
+      JSON.parse(text || "null");
+    } catch {
+      return {
+        ok: false,
+        status: response.status,
+        contentType,
+        sourceHint: classifyNonJsonResponse(text, contentType),
+        details: previewText(text),
+      };
+    }
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType,
+      details: response.ok
+        ? undefined
+        : previewText(text),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      contentType: "",
+      sourceHint: "network or configuration error",
+      details: error instanceof Error ? error.message : "WordPress REST check failed.",
+    };
+  }
 }
 
 function mapTerm(term: WordPressTerm): TaxonomyTerm {
