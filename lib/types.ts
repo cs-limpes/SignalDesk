@@ -28,6 +28,9 @@ export interface SignalDraft {
   signal: string;
   excerpt: string;
   sourceUrl: string;
+  sourceSiteName?: string;
+  sourceByline?: string;
+  sourcePublishedAt?: string;
   sourceAccessStatus: SourceAccessStatus;
   suggestedCategory: string;
   suggestedTags: string[];

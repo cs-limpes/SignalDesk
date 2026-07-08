@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import {
   buildSignalPostContent,
+  formatSourceCredit,
   parseAdditionalReferencesInput,
 } from "@/lib/post-content";
 import type {
@@ -809,6 +810,8 @@ function PreviewScreen({
   onPublish: (status: PublishStatus) => void;
   onRegenerate: () => void;
 }) {
+  const sourceCredit = formatSourceCredit(draft);
+
   return (
     <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)]">
       <div className="flex flex-col gap-4 rounded-lg border border-[#d5ddd6] bg-white p-4 shadow-sm">
@@ -866,6 +869,9 @@ function PreviewScreen({
           />
         </label>
 
+        {sourceCredit && (
+          <p className="text-sm leading-6 text-[#5c6b63]">{sourceCredit}</p>
+        )}
         <a
           className="break-all text-sm font-medium text-[#2f6275]"
           href={draft.sourceUrl}
@@ -1037,6 +1043,7 @@ function ConfirmScreen({
   const contentHtml = buildSignalPostContent(draft);
   const isBusy = busyAction === pendingStatus;
   const hasSkippedTerms = skippedCategoryNames.length || skippedTagNames.length;
+  const sourceCredit = formatSourceCredit(draft);
 
   return (
     <section className="grid flex-1 gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)]">
@@ -1135,8 +1142,16 @@ function ConfirmScreen({
           <div className="rounded-md border border-[#d5ddd6] bg-white p-3">
             <p className="font-semibold text-[#26332d]">Source</p>
             <p className="mt-1 break-words text-[#5c6b63]">
-              {article?.title || draft.sourceUrl}
+              {sourceCredit || article?.title || "Source"}
             </p>
+            <a
+              className="mt-1 block break-all font-semibold text-[#2f6275]"
+              href={draft.sourceUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {draft.sourceUrl}
+            </a>
           </div>
         </div>
 

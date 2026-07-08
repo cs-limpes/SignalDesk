@@ -84,6 +84,52 @@ function referenceLabel(value: string) {
   }
 }
 
+export function formatSourceDate(value?: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    return trimmed;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatSourceAuthor(value?: string) {
+  const author = value?.trim().replace(/^by\s+/i, "");
+  return author ? `By ${author}` : "";
+}
+
+function sourcePublication(draft: SignalDraft) {
+  return draft.sourceSiteName?.trim() || referenceLabel(draft.sourceUrl);
+}
+
+export function formatSourceCredit(draft: SignalDraft) {
+  return [
+    formatSourceDate(draft.sourcePublishedAt),
+    sourcePublication(draft),
+    formatSourceAuthor(draft.sourceByline),
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function buildSourceBlock(draft: SignalDraft) {
+  const sourceUrl = escapeHtml(draft.sourceUrl);
+  const sourceCredit = escapeHtml(formatSourceCredit(draft));
+  const creditLine = sourceCredit ? `${sourceCredit}<br>` : "";
+
+  return `<p><strong>Source:</strong> ${creditLine}<a href="${sourceUrl}" rel="nofollow noopener">${sourceUrl}</a></p>`;
+}
+
 export function buildSignalPostContent(draft: SignalDraft) {
   const signal = escapeHtml(draft.signal);
   const sourceUrl = escapeHtml(draft.sourceUrl);
@@ -107,7 +153,7 @@ export function buildSignalPostContent(draft: SignalDraft) {
 
   return [
     `<p><strong>Signal:</strong> ${signal}</p>`,
-    `<p><a href="${sourceUrl}" rel="nofollow noopener">Source</a></p>`,
+    buildSourceBlock(draft),
     ...furtherReading,
     `<!-- source_url: ${sourceUrl} -->`,
     `<!-- source_access_status: ${accessStatus} -->`,

@@ -65,7 +65,12 @@ function extractOutputText(payload: OpenAIResponse) {
 function parseSignalDraft(text: string, article: ArticleData): SignalDraft {
   const parsed = JSON.parse(text) as Omit<
     SignalDraft,
-    "sourceUrl" | "sourceAccessStatus" | "additionalReferences"
+    | "sourceUrl"
+    | "sourceSiteName"
+    | "sourceByline"
+    | "sourcePublishedAt"
+    | "sourceAccessStatus"
+    | "additionalReferences"
   >;
 
   return {
@@ -73,6 +78,9 @@ function parseSignalDraft(text: string, article: ArticleData): SignalDraft {
     signal: parsed.signal.trim(),
     excerpt: parsed.excerpt.trim(),
     sourceUrl: article.url,
+    sourceSiteName: article.siteName,
+    sourceByline: article.byline,
+    sourcePublishedAt: article.publishedAt,
     sourceAccessStatus: article.accessStatus,
     suggestedCategory: parsed.suggestedCategory.trim(),
     suggestedTags: parsed.suggestedTags
